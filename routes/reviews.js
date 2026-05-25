@@ -1,48 +1,45 @@
 const express = require('express');
 const router = express.Router();
-const Review = require('../models/Review');
-const Book = require('../models/Book');
+const db = require('../db');
 const { isAuthenticated } = require('../middleware/auth');
 
+let reviewId = 1; // Counter for review IDs
+
 // GET - Get all reviews
-router.get('/', async (req, res) => {
+router.get('/', (req, res) => {
   try {
-    const reviews = await Review.find()
-      .populate('userId', 'username email profile')
-      .populate('bookId', 'title author isbn')
-      .sort({ createdAt: -1 });
-    res.json(reviews);
+    res.json(db.reviews);
   } catch (error) {
-    res.status(500).json({ error: 'Failed to retrieve reviews', details: error.message });
+    res.status(500).json({ error: 'Failed to retrieve reviews' });
   }
 });
 
 // GET - Get reviews for a specific book
-router.get('/book/:bookId', async (req, res) => {
+router.get('/book/:bookId', (req, res) => {
   try {
-    const book = await Book.findById(req.params.bookId);
-    
+    const book = db.books.find(b => b.id === parseInt(req.params.bookId));
     if (!book) {
       return res.status(404).json({ error: 'Book not found' });
     }
 
-    const bookReviews = await Review.find({ bookId: req.params.bookId })
-      .populate('userId', 'username email profile')
-      .sort({ createdAt: -1 });
+    const bookReviews = db.reviews.filter(r => r.bookId === parseInt(req.params.bookId));
+    const averageRating = bookReviews.length > 0 
+      ? (bookReviews.reduce((sum, r) => sum + r.rating, 0) / bookReviews.length).toFixed(2)
+      : 0;
     
     res.json({
       book,
       reviews: bookReviews,
       totalReviews: bookReviews.length,
-      averageRating: book.ratings.averageRating
+      averageRating
     });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to retrieve book reviews', details: error.message });
+    res.status(500).json({ error: 'Failed to retrieve book reviews' });
   }
 });
 
 // POST - Add a new review (logged in users only)
-router.post('/', isAuthenticated, async (req, res) => {
+router.post('/', isAuthenticated, (req, res) => {
   try {
     const { bookId, rating, comment } = req.body;
 
@@ -60,40 +57,44 @@ router.post('/', isAuthenticated, async (req, res) => {
     }
 
     // Check if book exists
-    const book = await Book.findById(bookId);
+    const book = db.books.find(b => b.id === parseInt(bookId));
     if (!book) {
       return res.status(404).json({ error: 'Book not found' });
     }
 
     // Check if user already reviewed this book
-    const existingReview = await Review.findOne({
-      bookId,
-      userId: req.session.userId
-    });
+    const existingReview = db.reviews.find(r => 
+      r.bookId === parseInt(bookId) && r.userId === req.session.userId
+    );
 
     if (existingReview) {
       return res.status(400).json({ error: 'You have already reviewed this book' });
     }
 
     // Create new review
-    const newReview = new Review({
-      bookId,
+    const newReview = {
+      id: reviewId++,
+      bookId: parseInt(bookId),
       userId: req.session.userId,
       username: req.session.username,
       rating: parseInt(rating),
-      comment
-    });
+      comment,
+      helpful: 0,
+      unhelpful: 0,
+      createdAt: new Date()
+    };
 
-    await newReview.save();
+    db.reviews.push(newReview);
 
     // Update user's review count
-    const user = await require('../models/User').findById(req.session.userId);
-    user.profile.totalReviews += 1;
-    await user.save();
+    const user = db.users.find(u => u.id === req.session.userId);
+    if (user) {
+      user.profile.totalReviews += 1;
+    }
 
     res.status(201).json({
       message: 'Review added successfully',
-      review: await newReview.populate('userId', 'username email profile')
+      review: newReview
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to add review', details: error.message });
@@ -101,18 +102,18 @@ router.post('/', isAuthenticated, async (req, res) => {
 });
 
 // PUT - Modify a review (logged in users can only modify their own)
-router.put('/:reviewId', isAuthenticated, async (req, res) => {
+router.put('/:reviewId', isAuthenticated, (req, res) => {
   try {
     const { rating, comment } = req.body;
 
     // Find review
-    const review = await Review.findById(req.params.reviewId);
+    const review = db.reviews.find(r => r.id === parseInt(req.params.reviewId));
     if (!review) {
       return res.status(404).json({ error: 'Review not found' });
     }
 
     // Check authorization
-    if (review.userId.toString() !== req.session.userId) {
+    if (review.userId !== req.session.userId) {
       return res.status(403).json({ error: 'You can only modify your own reviews' });
     }
 
@@ -134,11 +135,9 @@ router.put('/:reviewId', isAuthenticated, async (req, res) => {
     }
     review.updatedAt = new Date();
 
-    await review.save();
-
     res.json({
       message: 'Review updated successfully',
-      review: await review.populate('userId', 'username email profile')
+      review
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to update review', details: error.message });
@@ -146,26 +145,29 @@ router.put('/:reviewId', isAuthenticated, async (req, res) => {
 });
 
 // DELETE - Delete a review (logged in users can only delete their own)
-router.delete('/:reviewId', isAuthenticated, async (req, res) => {
+router.delete('/:reviewId', isAuthenticated, (req, res) => {
   try {
     // Find review
-    const review = await Review.findById(req.params.reviewId);
-    if (!review) {
+    const reviewIndex = db.reviews.findIndex(r => r.id === parseInt(req.params.reviewId));
+    if (reviewIndex === -1) {
       return res.status(404).json({ error: 'Review not found' });
     }
 
+    const review = db.reviews[reviewIndex];
+
     // Check authorization
-    if (review.userId.toString() !== req.session.userId) {
+    if (review.userId !== req.session.userId) {
       return res.status(403).json({ error: 'You can only delete your own reviews' });
     }
 
     // Delete review
-    await Review.findByIdAndDelete(req.params.reviewId);
+    db.reviews.splice(reviewIndex, 1);
 
     // Update user's review count
-    const user = await require('../models/User').findById(req.session.userId);
-    user.profile.totalReviews = Math.max(0, user.profile.totalReviews - 1);
-    await user.save();
+    const user = db.users.find(u => u.id === req.session.userId);
+    if (user) {
+      user.profile.totalReviews = Math.max(0, user.profile.totalReviews - 1);
+    }
 
     res.json({
       message: 'Review deleted successfully',
@@ -177,11 +179,9 @@ router.delete('/:reviewId', isAuthenticated, async (req, res) => {
 });
 
 // GET - Get user's own reviews
-router.get('/user/my-reviews', isAuthenticated, async (req, res) => {
+router.get('/user/my-reviews', isAuthenticated, (req, res) => {
   try {
-    const userReviews = await Review.find({ userId: req.session.userId })
-      .populate('bookId', 'title author isbn')
-      .sort({ createdAt: -1 });
+    const userReviews = db.reviews.filter(r => r.userId === req.session.userId);
     
     res.json({
       username: req.session.username,
@@ -189,7 +189,7 @@ router.get('/user/my-reviews', isAuthenticated, async (req, res) => {
       totalReviews: userReviews.length
     });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to retrieve user reviews', details: error.message });
+    res.status(500).json({ error: 'Failed to retrieve user reviews' });
   }
 });
 

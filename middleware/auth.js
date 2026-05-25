@@ -28,10 +28,11 @@ const isAuthenticated = (req, res, next) => {
   }
 };
 
-// Generate JWT token for MongoDB user
+// Generate JWT token for user (works with both MongoDB and in-memory)
 const generateToken = (user) => {
+  const userId = user._id || user.id;
   return jwt.sign(
-    { userId: user._id, email: user.email, username: user.username },
+    { userId, email: user.email, username: user.username },
     JWT_SECRET,
     { expiresIn: '24h' }
   );

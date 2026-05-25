@@ -1,7 +1,10 @@
 const express = require('express');
+const bcryptjs = require('bcryptjs');
 const router = express.Router();
-const User = require('../models/User');
+const db = require('../db');
 const { generateToken, isAuthenticated } = require('../middleware/auth');
+
+let userId = 1; // Counter for user IDs
 
 // POST - Register a new user
 router.post('/register', async (req, res) => {
@@ -14,24 +17,35 @@ router.post('/register', async (req, res) => {
     }
 
     // Check if user already exists
-    const existingUser = await User.findOne({ $or: [{ email }, { username }] });
+    const existingUser = db.users.find(u => u.email === email || u.username === username);
     if (existingUser) {
       return res.status(409).json({ error: 'User already exists' });
     }
 
+    // Hash password
+    const hashedPassword = await bcryptjs.hash(password, 10);
+
     // Create new user
-    const newUser = new User({
+    const newUser = {
+      id: userId++,
       username,
       email,
-      password
-    });
+      password: hashedPassword,
+      profile: {
+        bio: '',
+        avatar: '',
+        joinedDate: new Date(),
+        totalReviews: 0
+      },
+      createdAt: new Date()
+    };
 
-    await newUser.save();
+    db.users.push(newUser);
 
     res.status(201).json({
       message: 'User registered successfully',
       user: {
-        id: newUser._id,
+        id: newUser.id,
         username: newUser.username,
         email: newUser.email
       }
@@ -41,7 +55,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// POST - Login user with Session
+// POST - Login user
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -51,20 +65,20 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    // Find user and select password field
-    const user = await User.findOne({ email }).select('+password');
+    // Find user
+    const user = db.users.find(u => u.email === email);
     if (!user) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
     // Verify password
-    const isPasswordValid = await user.matchPassword(password);
+    const isPasswordValid = await bcryptjs.compare(password, user.password);
     if (!isPasswordValid) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
     // Create session
-    req.session.userId = user._id.toString();
+    req.session.userId = user.id;
     req.session.username = user.username;
     req.session.email = user.email;
 
@@ -75,7 +89,7 @@ router.post('/login', async (req, res) => {
       message: 'Login successful',
       token,
       user: {
-        id: user._id,
+        id: user.id,
         username: user.username,
         email: user.email,
         profile: user.profile
@@ -86,7 +100,7 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// POST - Login with JWT (alternative login endpoint)
+// POST - Login with JWT
 router.post('/login-jwt', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -95,12 +109,12 @@ router.post('/login-jwt', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    const user = await User.findOne({ email }).select('+password');
+    const user = db.users.find(u => u.email === email);
     if (!user) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    const isPasswordValid = await user.matchPassword(password);
+    const isPasswordValid = await bcryptjs.compare(password, user.password);
     if (!isPasswordValid) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
@@ -112,7 +126,7 @@ router.post('/login-jwt', async (req, res) => {
       message: 'Login successful',
       token,
       user: {
-        id: user._id,
+        id: user.id,
         username: user.username,
         email: user.email,
         profile: user.profile
@@ -124,15 +138,15 @@ router.post('/login-jwt', async (req, res) => {
 });
 
 // GET - Get current logged-in user
-router.get('/me', isAuthenticated, async (req, res) => {
+router.get('/me', isAuthenticated, (req, res) => {
   try {
-    const user = await User.findById(req.session.userId);
+    const user = db.users.find(u => u.id === req.session.userId);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
     res.json({
-      id: user._id,
+      id: user.id,
       username: user.username,
       email: user.email,
       profile: user.profile,
@@ -144,45 +158,52 @@ router.get('/me', isAuthenticated, async (req, res) => {
 });
 
 // PUT - Update user profile
-router.put('/profile', isAuthenticated, async (req, res) => {
+router.put('/profile', isAuthenticated, (req, res) => {
   try {
     const { bio, avatar } = req.body;
-    
-    const user = await User.findById(req.session.userId);
+
+    const user = db.users.find(u => u.id === req.session.userId);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
     if (bio) user.profile.bio = bio;
     if (avatar) user.profile.avatar = avatar;
-    user.updatedAt = new Date();
-
-    await user.save();
 
     res.json({
       message: 'Profile updated successfully',
-      user: user.getPublicProfile()
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        profile: user.profile
+      }
     });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to update profile', details: error.message });
+    res.status(500).json({ error: 'Failed to update profile' });
   }
 });
 
-// GET - Get user public profile
-router.get('/:userId', async (req, res) => {
+// GET - Get user profile by ID
+router.get('/:userId', (req, res) => {
   try {
-    const user = await User.findById(req.params.userId);
+    const user = db.users.find(u => u.id === parseInt(req.params.userId));
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    res.json(user.getPublicProfile());
+    res.json({
+      id: user.id,
+      username: user.username,
+      profile: user.profile,
+      createdAt: user.createdAt
+    });
   } catch (error) {
     res.status(500).json({ error: 'Failed to retrieve user' });
   }
 });
 
-// POST - Logout user
+// POST - Logout
 router.post('/logout', (req, res) => {
   req.session.destroy((err) => {
     if (err) {

@@ -3,22 +3,13 @@ const session = require('express-session');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const path = require('path');
-const mongoose = require('mongoose');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// MongoDB Connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/bookstore')
-.then(() => {
-  console.log('MongoDB connected successfully');
-})
-.catch(err => {
-  console.log('MongoDB connection error:', err.message);
-  console.log('Note: If using local MongoDB, ensure mongod is running');
-  console.log('Or configure MONGODB_URI in .env for cloud MongoDB (Atlas)');
-});
+// Using in-memory database (no MongoDB setup required)
+console.log('Using in-memory database for development');
 
 // Middleware
 app.use(cors());
